@@ -24,7 +24,7 @@ RH_RF69 radio(CS, G0);
 #define REPLY_ERROR 2        // The data was not received!
 
 // Function prototypes
-bool validChecksum(uint8_t*, unsigned int&);
+bool validChecksum(uint8_t*, float&);
 
 void setup() {
 
@@ -126,10 +126,25 @@ void loop() {
        * server to check it.
        */
 
+      // A union used for 'converting' the received data to a proper float
+      union FloatBuilder {
+        float data;
+        uint8_t bytes[4];
+      };
+
       // For now we will just be receiving temperature readings
       // Bring the temperature in
-      unsigned int temperature = receive[1] * 256 + receive[2];
+      FloatBuilder *specialCast = new FloatBuilder;
+      specialCast->bytes[0] = receive[1];
+      specialCast->bytes[1] = receive[2];
+      specialCast->bytes[2] = receive[3];
+      specialCast->bytes[3] = receive[4];
 
+      float temperature = specialCast->data;
+
+      // Cleanup
+      delete specialCast;
+      
       // Make sure the checksum cleared
       if (!validChecksum(receive, temperature)) {
         Serial.println("Checksum did not validate! Retrying later");
@@ -172,7 +187,7 @@ void loop() {
  * 
  * !! We are only expecting temperature data right now !!
  */
-bool validChecksum(uint8_t *data, unsigned int &temperature) {
+bool validChecksum(uint8_t *data, float &temperature) {
 
   union CheckSum {
     unsigned long value;
@@ -182,12 +197,12 @@ bool validChecksum(uint8_t *data, unsigned int &temperature) {
   // Fill out the checksum
   CheckSum check;
   
-  check.bytes[0] = data[3];
-  check.bytes[1] = data[4];
-  check.bytes[2] = data[5];
-  check.bytes[3] = data[6];
+  check.bytes[0] = data[5];
+  check.bytes[1] = data[6];
+  check.bytes[2] = data[7];
+  check.bytes[3] = data[8];
 
   // Now compare the two
-  return (check.value == temperature);
+  return (check.value == static_cast<int>(temperature));
 
 }

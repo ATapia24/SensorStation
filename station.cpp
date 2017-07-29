@@ -10,246 +10,187 @@
 #define RS 2
 
 // Sensor pins
-#define TEMP 10
+#define TEMP 1
 
 // Radio object
 RH_RF69 radio(CS, G0);
 
 // etc. Configurations
-#define RESEND 5    // The amount of times to resend the data
-#define RETRY 5     // The amount of times to retry getting a reply before giving up
+#define TIMEOUT 1000  // The amount of time in milliseconds to wait for a reply before timing out
+int TRANS_POWER = 14; // The amount trans power should start out with (changes if the server signals NO_REPLY)
 
 // Status register shift amounts
-#define NO_REPLY 0   // Set this bit in the status register to signify
-// no reply was received
-#define ERR 1        // Set this bit in the status register to signify
-// There was an error in receiving data
+#define SEND_DATA 0       // Request that the sensor data be sent
+#define TRANS_ERROR 1     // There was an error in the data being received
+#define REPLY_ERROR 2        // The data was not received!
 
 // Function prototypes
-void handleReplyInstruction(uint8_t*);
-bool retryConnection(uint8_t*);
+float getTemperature();
+long calcChecksum(float&); 
 
 void setup() {
 
-	// Configure serial comm.
-	Serial.begin(115200);
+  // Configure serial comm.
+  Serial.begin(115200);
 
-	Serial.println("Begining setup");
+  Serial.println("Begining setup");
+  
+  // Configure appropriate pins as outputs
+  pinMode(RS, OUTPUT);   // Reset
+  digitalWrite(RS, LOW); // Pull RS pin low
 
-	// Configure appropriate pins as outputs
-	pinMode(RS, OUTPUT);   // Reset
-	digitalWrite(RS, LOW); // Pull RS pin low
+  pinMode(TEMP, INPUT);  // TEMP input
 
-	pinMode(TEMP, INPUT);  // TEMP input
+  // Manually reset the radio
+  digitalWrite(RS, HIGH);
+  delay(10);
+  digitalWrite(RS, LOW);
+  delay(10);
 
-						   // Manually reset the radio
-	digitalWrite(RS, HIGH);
-	delay(10);
-	digitalWrite(RS, LOW);
-	delay(10);
+  // Check to make sure the radio is ready to go
+  if (!radio.init()) {
+    // Radio didn't start
+    Serial.println("Unable to start the radio");
+    for(;;) {}
+  }
 
-	// Check to make sure the radio is ready to go
-	if (!radio.init()) {
-		// Radio didn't start
-		Serial.println("Unable to start the radio");
-		for (;;) {}
-	}
+  // Set the frequency and make sure it worked
+  if (!radio.setFrequency(FREQ)) {
+    // Failed to set the frequency
+    Serial.println("Unable to set the frequency");
+    for (;;) {}
+  }
+  
+  // Set the transmitting power and 'true' because I am using the HCW model
+  radio.setTxPower(TRANS_POWER, true);
 
-	// Set the frequency and make sure it worked
-	if (!radio.setFrequency(FREQ)) {
-		// Failed to set the frequency
-		Serial.println("Unable to set the frequency");
-		for (;;) {}
-	}
+  // Create an encryption key. This must be the same as the Rx transciever
+  uint8_t key[] = { 0x05, 0x03, 0x01, 0x05, 0x06, 0x08, 0x02, 0x03,
+                    0x08, 0x02, 0x01, 0x08, 0x07, 0x03, 0x04, 0x02};
 
-	// Set the transmitting power and 'true' because I am using the HCW model
-	radio.setTxPower(20, true);
+  // Set the key
+  radio.setEncryptionKey(key);
 
-	// Create an encryption key. This must be the same as the Rx transciever
-	uint8_t key[] = { 0x05, 0x03, 0x01, 0x05, 0x06, 0x08, 0x02, 0x03,
-		0x08, 0x02, 0x01, 0x08, 0x07, 0x03, 0x04, 0x02 };
-
-	// Set the key
-	radio.setEncryptionKey(key);
-
-	Serial.println("The radio has been setup, and is ready to go");
+  Serial.println("The radio has been setup, and is ready to go");
 
 }
+
+// These variables will be used to hold data for sending and receiving
+uint8_t receive[RH_RF69_MAX_MESSAGE_LEN];
+uint8_t rSize;
+
+uint8_t *transmit;
 
 void loop() {
 
-	/*
-	* For now, we are just going to sample a temperature sensor, and send the
-	* data 5 times, for error detection.
-	*/
+  /*
+   * The statoin's job is just to wait for commands from the server, so there
+   * will be no delays in this loop (except for data transmission delays)
+   */
 
-	// 10 second delay I was talking about
-	delay(1000);
+  if (radio.available()) {
 
-	// Read in the temperature
-	int temp = analogRead(TEMP);
+    // We should have a message
+    if (radio.recv(receive, &rSize)) {
 
-	// Convert the data into something we can send
-	/*
-	*  The first byte is a status register, then the rest is data
-	*/
-	uint8_t data[] = { 0x00, highByte(temp), lowByte(temp) };
+      // Make sure there is actually a message to receive
+      if (rSize < 1) return;
 
-	// Create the necessary variables to hold the reply data
-	uint8_t buff[RH_RF69_MAX_MESSAGE_LEN];  // Holds the bytes of data sent
-	uint8_t len = sizeof(buff);             // ~~~~
-	uint8_t amnt = 0;                        // Keeps track of how many replies we've had
+      // Check for the status register for instructions
+      if (bitSet(receive[0], TRANS_ERROR)) {
+        // TODO: not much to do here for now
+      }
 
-											 // Prompt data being sent
-	Serial.println("Attempting to send data");
+      if (bitSet(receive[0], REPLY_ERROR)) {
+        // Increase the trans power by 1
+        if (TRANS_POWER != 20) {
+          TRANS_POWER++;
+          radio.setTxPower(TRANS_POWER, true);
+        }
+      }
+      
+      if (bitSet(receive[0], SEND_DATA)) {
+        // Send sensor data over!
+        float temperature = getTemperature();
 
-	// Send the data as many times as defined above
-	for (uint8_t i = 0; i < RESEND; i++) {
+        // Build the data to send over
+        transmit = new uint8_t[9];
 
-		// Send the data over
-		radio.send(data, sizeof(data));
-		// Make sure the data is sent before proceeding
-		radio.waitPacketSent();
+        // No need to send any commands over the sreg, so just send the data
+        union LongSplicer {
+          long data;
+          uint8_t bytes[4];
+        };
 
-		// Promt the user
-		Serial.println("Packet ");
-		Serial.print(i + 1, DEC);
-		Serial.print("/");
-		Serial.print(RESEND, DEC);
-		Serial.print(" sent");
+        union FloatSplicer {
+          float data;
+          uint8_t bytes[4];
+        };
 
-		// Handle the reply from the other radio, if there is any
-		if (radio.waitAvailableTimeout(1000)) {
+        // Create the checksum
+        long checkSum = calcChecksum(temperature);
 
-			// We should have waited enough time 
-			if (radio.recv(buff, &len)) {
+        // Breakdown the long into bytes
+        LongSplicer *sLong = new LongSplicer;
+        sLong->data = checkSum;
 
-				// Increment received replies
-				amnt++;
+        // Breakdown the float into bytes
+        FloatSplicer *sFloat = new FloatSplicer;
+        sFloat->data = temperature;
 
-				// TODO: handle reply instructions from the other radio
+        // Fillout the data to send, then cleanup
+        transmit[1] = sFloat->bytes[0];
+        transmit[2] = sFloat->bytes[1];
+        transmit[3] = sFloat->bytes[2];
+        transmit[4] = sFloat->bytes[3];
 
-				// Check to see if we are on the last iteration, so we can check to see if the data
-				// needs to be re-sent
-				if ((i + 1) == RESEND) {
+        transmit[5] = sLong->bytes[0];
+        transmit[6] = sLong->bytes[1];
+        transmit[7] = sLong->bytes[2];
+        transmit[8] = sLong->bytes[3];
 
-					// For kicks and giggles, calculate our reply ratio
-					float replyRatio = static_cast<double>(amnt) / static_cast<double>(RESEND);
-					Serial.println("Reply reliablity: ");
-					Serial.print(replyRatio);
-					Serial.print("%");
+        delete sFloat;
+        delete sLong;
 
-					// Check to see if we received all the replies
-					if (amnt != RESEND) {
-						// We didn't get all the replies we wanted
-						Serial.println("Not all replies were received, even after multiple retries. Perhaps the server is down?");
-					}
-					else {
-						// We got all the replies back
-						Serial.println("We got a reply for all data sent!");
-					}
+        // Transmit the data over
+        radio.send(transmit, sizeof(transmit));
+        radio.waitPacketSent();
 
-				}
-				else {
-					// Print out the received data
-					Serial.print("Reply: ");
-					Serial.println((char*)buff);
-				}
-
-			}
-			else {
-				// We weren't able to receive the data.. for whatever reason
-				Serial.println("Unable to receive the data");
-
-				// TODO
-			}
-
-		}
-		else {
-
-			// Let the user know what's going on
-			Serial.println("No reply, attempting to try again");
-
-			// TODO
-
-		}
-
-	}
-
+        // Cleanup again
+        delete [] transmit;
+        
+      }
+      
+    } else {
+      // There was an error in receiving the message
+      // For now we will do nothing
+    }
+  
+  }
+  
 }
 
 /*
-* A simple function that attempts to retry getting a response from the
-* other radio.
-* @param data The data to send again. Make sure to set the status register
-*             accordingly
-*/
-bool retryConnection(uint8_t *data) {
+ * Used to get the temperature reading off of the
+ * sensor
+ */
+float getTemperature() {
 
-	// Try a specified amount of times before giving up
-	for (uint8_t i = 0; i < RETRY; i++) {
+  float temperatureC = ((5.0 * analogRead(TEMP)) - 0.5) * 100 ;
 
-		// Notifications...
-		Serial.println("Attempting to resend data");
-		Serial.print(" Try #");
-		Serial.print(i + 1, DEC);
-
-		// Send the data over
-		radio.send(data, sizeof(data));
-		// Make sure the data is sent before proceeding
-		radio.waitPacketSent();
-
-		// Check to see if the data sent
-		if (radio.waitAvailableTimeout(1000)) {
-
-			// Variables to hold the received data
-			uint8_t buff[RH_RF69_MAX_MESSAGE_LEN];  // Holds the bytes of data sent
-			uint8_t len = sizeof(buff);             // ~~~~
-
-													// Attempt to receive the data from trying the connection
-			if (radio.recv(buff, &len)) {
-
-				// We received a reply, now we just handle the reply!
-				handleReplyInstruction(buff, data);
-
-				// Return true because we were able to get a reply
-				return true;
-
-			}
-			else {
-				// Sadly, the data receive failed
-				Serial.println("An error occurred while trying to receive the data");
-			}
-
-		}
-		else {
-
-			Serial.println("No reply!");
-
-		}
-
-	}
-
-	// Return false because if we get here.. we weren't able to get a reply
-	return false;
-
+  return temperatureC;
+  
 }
 
 /*
-* This function's job is to take the byte of data that is the header of every message
-* and do what it's telling us too!
-* @param sReg The status part of the message sent from the other radio
-* @param reply The entire reply message
-* @param data The data that was sent to 'create' the reply
-*/
-void handleReplyInstruction(uint8_t *prev, uint8_t *data) {
+ * Used to calculate the checksum for data checking (because
+ * there is a possibility of error)
+ */
+long calcChecksum(float &temperature) {
 
-	if (bitRead(prev[0], NO_REPLY) == 1 || bitRead(prev[0], ERR)) {
-		// The radio isn't getting replies from us, or the data was corrupted
-		// Either way, we need to resend our data
-
-		// TODO: resend the data
-
-	}
-
+  // Removing the decimal on the float.. Since the checksum is a long
+  int intTemperature = static_cast<int>(temperature);
+  
+  return intTemperature;
+  
 }
