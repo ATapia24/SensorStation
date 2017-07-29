@@ -9,9 +9,6 @@
 #define G0 3
 #define RS 2
 
-// Sensor pins
-#define TEMP 10
-
 // Radio object
 RH_RF69 radio(CS, G0);
 
@@ -39,8 +36,6 @@ void setup() {
   // Configure appropriate pins as outputs
   pinMode(RS, OUTPUT);   // Reset
   digitalWrite(RS, LOW); // Pull RS pin low
-
-  pinMode(TEMP, INPUT);  // TEMP input
 
   // Manually reset the radio
   digitalWrite(RS, HIGH);
