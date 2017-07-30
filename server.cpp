@@ -16,7 +16,7 @@ RH_RF69 radio(CS, G0);
 #define RESEND 5      // The amount of times to resend the data
 #define RETRY 5       // The amount of times to retry getting a reply before giving up
 #define DELAY 5000    // The amount of milliseconds to delay at the end of the loop
-#define TIMEOUT 1000  // The amount of time in milliseconds to wait for a reply before timing out
+#define TIMEOUT 500  // The amount of time in milliseconds to wait for a reply before timing out
 
 // Status register shift amounts
 #define SEND_DATA 0       // Request that the sensor data be sent
@@ -81,17 +81,13 @@ enum Status {
 // Used to hold the current state of the server
 Status state = NORMAL;
 
-// These variables will be used to hold data for sending and receiving
-uint8_t receive[RH_RF69_MAX_MESSAGE_LEN];
-uint8_t rSize;
-
-uint8_t *transmit;
-uint8_t tSize;
-
 void loop() {
 
+  // Making sure there is at least X second(s) between each interval
+  delay(DELAY);
+
   // Start by requesting data from the weather station
-  transmit = new uint8_t[1];
+  uint8_t transmit[1];
 
   // Build the byte to send
   transmit[0] = 0x00;
@@ -108,13 +104,20 @@ void loop() {
   radio.send(transmit, sizeof(transmit));
   radio.waitPacketSent();
 
-  delete [] transmit; // Cleanup
-
   // Wait for a reply
   if (radio.waitAvailableTimeout(TIMEOUT)) {
 
+    // These variables will be used to hold data for sending and receiving
+    uint8_t receive[RH_RF69_MAX_MESSAGE_LEN];
+    uint8_t rSize = sizeof(receive);
+
     // Attempt to receive the data
     if (radio.recv(receive, &rSize)) {
+
+      if (!rSize) {
+        Serial.println("Transmission complete, but no data was sent!");
+        return;
+      }
 
       // Make sure the state is updated to normal
       state = NORMAL;
@@ -129,34 +132,31 @@ void loop() {
       // A union used for 'converting' the received data to a proper float
       union FloatBuilder {
         float data;
-        uint8_t bytes[4];
+        byte bytes[4];
       };
 
       // For now we will just be receiving temperature readings
       // Bring the temperature in
-      FloatBuilder *specialCast = new FloatBuilder;
-      specialCast->bytes[0] = receive[1];
-      specialCast->bytes[1] = receive[2];
-      specialCast->bytes[2] = receive[3];
-      specialCast->bytes[3] = receive[4];
+      FloatBuilder specialCast;
+      specialCast.bytes[0] = receive[1];
+      specialCast.bytes[1] = receive[2];
+      specialCast.bytes[2] = receive[3];
+      specialCast.bytes[3] = receive[4];
 
-      float temperature = specialCast->data;
+      float temperature = specialCast.data;
 
-      // Cleanup
-      delete specialCast;
-      
       // Make sure the checksum cleared
       if (!validChecksum(receive, temperature)) {
         Serial.println("Checksum did not validate! Retrying later");
         state = ERROR;
         return;
       }
-
+      
       // If all is good, then print the data
-      Serial.println("Temperature: ");
-      Serial.print(temperature, DEC);
-      Serial.println("RSSI: ");
-      Serial.print(radio.lastRssi());
+      Serial.print("Temperature: ");
+      Serial.println(temperature, DEC);
+      Serial.print("RSSI: ");
+      Serial.println(radio.lastRssi());
       
     } else {
 
@@ -175,9 +175,6 @@ void loop() {
     // No reply, so just try again later
     Serial.println("No reply from the station. Trying again later...");
   }
-
-  // Making sure there is at least X second(s) between each interval
-  delay(DELAY);
 
 }
 

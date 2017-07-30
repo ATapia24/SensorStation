@@ -10,13 +10,13 @@
 #define RS 2
 
 // Sensor pins
-#define TEMP 1
+#define TEMP A0
 
 // Radio object
 RH_RF69 radio(CS, G0);
 
 // etc. Configurations
-#define TIMEOUT 1000  // The amount of time in milliseconds to wait for a reply before timing out
+#define TIMEOUT 500  // The amount of time in milliseconds to wait for a reply before timing out
 int TRANS_POWER = 14; // The amount trans power should start out with (changes if the server signals NO_REPLY)
 
 // Status register shift amounts
@@ -75,12 +75,6 @@ void setup() {
 
 }
 
-// These variables will be used to hold data for sending and receiving
-uint8_t receive[RH_RF69_MAX_MESSAGE_LEN];
-uint8_t rSize;
-
-uint8_t *transmit;
-
 void loop() {
 
   /*
@@ -90,11 +84,20 @@ void loop() {
 
   if (radio.available()) {
 
+    Serial.println("Data detected, attemtping to parse");
+
+    // These variables will be used to hold data for sending and receiving
+    uint8_t receive[RH_RF69_MAX_MESSAGE_LEN];
+    uint8_t rSize = sizeof(receive);
+
     // We should have a message
     if (radio.recv(receive, &rSize)) {
 
       // Make sure there is actually a message to receive
-      if (rSize < 1) return;
+      if (!rSize) {
+        Serial.println("No data received!");
+        // return;
+      }
 
       // Check for the status register for instructions
       if (bitSet(receive[0], TRANS_ERROR)) {
@@ -111,59 +114,57 @@ void loop() {
       
       if (bitSet(receive[0], SEND_DATA)) {
         // Send sensor data over!
+
+        Serial.println("Data requested, sending now...");
+        
         float temperature = getTemperature();
 
         // Build the data to send over
-        transmit = new uint8_t[9];
+        uint8_t transmit[9];
 
         // No need to send any commands over the sreg, so just send the data
         union LongSplicer {
           long data;
-          uint8_t bytes[4];
+          byte bytes[4];
         };
 
         union FloatSplicer {
           float data;
-          uint8_t bytes[4];
+          byte bytes[4];
         };
 
         // Create the checksum
         long checkSum = calcChecksum(temperature);
 
         // Breakdown the long into bytes
-        LongSplicer *sLong = new LongSplicer;
-        sLong->data = checkSum;
+        LongSplicer sLong;
+        sLong.data = checkSum;
 
         // Breakdown the float into bytes
-        FloatSplicer *sFloat = new FloatSplicer;
-        sFloat->data = temperature;
+        FloatSplicer sFloat;
+        sFloat.data = temperature;
 
         // Fillout the data to send, then cleanup
-        transmit[1] = sFloat->bytes[0];
-        transmit[2] = sFloat->bytes[1];
-        transmit[3] = sFloat->bytes[2];
-        transmit[4] = sFloat->bytes[3];
+        transmit[1] = sFloat.bytes[0];
+        transmit[2] = sFloat.bytes[1];
+        transmit[3] = sFloat.bytes[2];
+        transmit[4] = sFloat.bytes[3];
 
-        transmit[5] = sLong->bytes[0];
-        transmit[6] = sLong->bytes[1];
-        transmit[7] = sLong->bytes[2];
-        transmit[8] = sLong->bytes[3];
-
-        delete sFloat;
-        delete sLong;
+        transmit[5] = sLong.bytes[0];
+        transmit[6] = sLong.bytes[1];
+        transmit[7] = sLong.bytes[2];
+        transmit[8] = sLong.bytes[3];
 
         // Transmit the data over
         radio.send(transmit, sizeof(transmit));
         radio.waitPacketSent();
-
-        // Cleanup again
-        delete [] transmit;
         
       }
       
     } else {
       // There was an error in receiving the message
       // For now we will do nothing
+      Serial.println("Unable to parse data!");
     }
   
   }
@@ -176,9 +177,13 @@ void loop() {
  */
 float getTemperature() {
 
-  float temperatureC = ((5.0 * analogRead(TEMP)) - 0.5) * 100 ;
+  float voltage = analogRead(TEMP) * 5.0;
+  voltage /= 1024.0;
 
-  return temperatureC;
+  float temperatureC = (voltage - 0.5) * 100 ; 
+  float temperatureF = (temperatureC * 9.0 / 5.0) + 32.0;
+
+  return temperatureF;
   
 }
 
