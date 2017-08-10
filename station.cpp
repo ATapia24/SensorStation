@@ -31,8 +31,8 @@ int TRANS_POWER = 14; // The amount trans power should start out with (changes i
 
 					  // Function prototypes
 uint16_t getTemperatureRead();
-byte calcChecksum(uint16_t&, uint16_t&, uint16_t&, uint16_t&, float&, float&, float&);
-void spliceData(uint16_t&, uint16_t&, uint16_t&, uint16_t&, float&, float&, float&, long&, uint8_t[]);
+byte calcChecksum(uint16_t&, int16_t&, int16_t&, int16_t&, float&, float&, float&);
+void spliceData(uint16_t&, int16_t&, int16_t&, int16_t&, float&, float&, float&, long&, uint8_t[]);
 
 void setup() {
 
@@ -106,6 +106,11 @@ union UInt16Splicer {
 	byte bytes[2];
 };
 
+union Int16Splicer {
+	int16_t data;
+	byte bytes[2];
+};
+
 void loop() {
 
 	/*
@@ -153,7 +158,7 @@ void loop() {
 
 				// Get the accelerometer data
 				acc.read();
-				uint16_t x = acc.x, y = acc.y, z = acc.z;
+				int16_t x = acc.x, y = acc.y, z = acc.z;
 
 				sensors_event_t accEvent;
 				acc.getEvent(&accEvent);
@@ -201,7 +206,7 @@ uint16_t getTemperatureRead() {
 * Used to calculate the checksum for data checking (because
 * there is a possibility of error)
 */
-byte calcChecksum(uint16_t &temperature, uint16_t &x, uint16_t &y, uint16_t &z, float &g_x, float &g_y, float &g_z) {
+byte calcChecksum(uint16_t &temperature, int16_t &x, int16_t &y, int16_t &z, float &g_x, float &g_y, float &g_z) {
 
 	// Removing the decimal on the float.. Since the checksum is a long
 	long sum = temperature + x + y + z + static_cast<int>(g_x) + static_cast<int>(g_y) + static_cast<int>(g_z);
@@ -209,7 +214,7 @@ byte calcChecksum(uint16_t &temperature, uint16_t &x, uint16_t &y, uint16_t &z, 
 	LongSplicer sumSplicer;
 	sumSplicer.data = sum;
 
-	return sumSplicer.bytes[3];
+	return sumSplicer.bytes[0];
 
 }
 
@@ -217,14 +222,14 @@ byte calcChecksum(uint16_t &temperature, uint16_t &x, uint16_t &y, uint16_t &z, 
 * Breaks all the data given into the provided byte array, to be sent
 * over packet radio
 */
-void spliceData(uint16_t &temp, uint16_t &x, uint16_t &y, uint16_t &z, float &g_x, float &g_y, float &g_z, byte &checksum, uint8_t data[]) {
+void spliceData(uint16_t &temp, int16_t &x, int16_t &y, int16_t &z, float &g_x, float &g_y, float &g_z, byte &checksum, uint8_t data[]) {
 
 	// Breakdown the temperature reading into bytes
 	UInt16Splicer tempSplicer;
 	tempSplicer.data = temp;
 
 	// Breakdown all the axis' into bytes
-	UInt16Splicer xS, yS, zS;
+	Int16Splicer xS, yS, zS;
 	xS.data = x; yS.data = y; zS.data = z;
 
 	// Breakdown all the g's into bytes
