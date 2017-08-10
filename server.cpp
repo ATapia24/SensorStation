@@ -15,7 +15,7 @@ RH_RF69 radio(CS, G0);
 // etc. Configurations
 #define RESEND 5      // The amount of times to resend the data
 #define RETRY 5       // The amount of times to retry getting a reply before giving up
-#define DELAY 1000    // The amount of milliseconds to delay at the end of the loop
+#define DELAY 5000    // The amount of milliseconds to delay at the end of the loop
 #define TIMEOUT 500  // The amount of time in milliseconds to wait for a reply before timing out
 
 // Status register shift amounts
@@ -188,16 +188,20 @@ void loop() {
 				return;
 			}
 
+			// Convert the temperature to usuable data
+			float celsius = (((temperature.data * 5) / 1024.0) - 0.5) / 0.01,
+				farenheight = (celsius * 1.8) + 32;
+
 			// If all is good, then print the data
 			Serial.print("Temperature: ");
-			Serial.println(temperature.data, DEC);
+			Serial.println(farenheight, DEC);
 
 			Serial.print("X: ");
 			Serial.print(x.data);
 			Serial.print(" Y: ");
 			Serial.print(y.data);
 			Serial.print(" Z: ");
-			Serial.println(y.data);
+			Serial.println(z.data);
 
 			Serial.print("RSSI: ");
 			Serial.println(radio.lastRssi());
