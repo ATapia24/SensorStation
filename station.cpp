@@ -1,5 +1,7 @@
 #include <SPI.h>
 #include <RH_RF69.h>
+#include <Adafruit_MMA8451.h>
+#include <Adafruit_Sensor.h>
 
 // Frequency in MGhz
 #define FREQ 433.0
@@ -15,6 +17,9 @@
 // Radio object
 RH_RF69 radio(CS, G0);
 
+// Accelerometer object
+Adafruit_MMA8451 acc = Adafruit_MMA8451();
+
 // etc. Configurations
 #define TIMEOUT 500  // The amount of time in milliseconds to wait for a reply before timing out
 int TRANS_POWER = 14; // The amount trans power should start out with (changes if the server signals NO_REPLY)
@@ -25,8 +30,9 @@ int TRANS_POWER = 14; // The amount trans power should start out with (changes i
 #define REPLY_ERROR 2        // The data was not received!
 
 					  // Function prototypes
-float getTemperature();
-long calcChecksum(float&);
+uint16_t getTemperatureRead();
+byte calcChecksum(uint16_t&, uint16_t&, uint16_t&, uint16_t&, float&, float&, float&);
+void spliceData(uint16_t&, uint16_t&, uint16_t&, uint16_t&, float&, float&, float&, long&, uint8_t[]);
 
 void setup() {
 
@@ -73,10 +79,32 @@ void setup() {
 
 	Serial.println("The radio has been setup, and is ready to go");
 
-	// Have the arduino read the external reference pin
-	analogReference(EXTERNAL);
+	// Test to make sure the accelerometer is ready to go
+	if (!acc.begin()) {
+		Serial.println("Unable to start the accelerometer");
+		for (;;) {}
+	}
+
+	// Set the range of the accelerometer
+	acc.setRange(MMA8451_RANGE_2_G);
 
 }
+
+// Unions for breaking apart data into bytes
+union LongSplicer {
+	long data;
+	byte bytes[4];
+};
+
+union FloatSplicer {
+	float data;
+	byte bytes[4];
+};
+
+union UInt16Splicer {
+	uint16_t data;
+	byte bytes[2];
+};
 
 void loop() {
 
@@ -120,43 +148,27 @@ void loop() {
 
 				Serial.println("Data requested, sending now...");
 
-				float temperature = getTemperature();
+				// Get the temperature
+				uint16_t temperature = getTemperatureRead();
+
+				// Get the accelerometer data
+				acc.read();
+				uint16_t x = acc.x, y = acc.y, z = acc.z;
+
+				sensors_event_t accEvent;
+				acc.getEvent(&accEvent);
+
+				float g_x = accEvent.acceleration.x, g_y = accEvent.acceleration.y, g_z = accEvent.acceleration.z;
 
 				// Build the data to send over
-				uint8_t transmit[9];
+				uint8_t transmit[22];
 
 				// No need to send any commands over the sreg, so just send the data
-				union LongSplicer {
-					long data;
-					byte bytes[4];
-				};
-
-				union FloatSplicer {
-					float data;
-					byte bytes[4];
-				};
-
 				// Create the checksum
-				long checkSum = calcChecksum(temperature);
+				byte checkSum = calcChecksum(temperature, x, y, z, g_x, g_y, g_z);
 
-				// Breakdown the long into bytes
-				LongSplicer sLong;
-				sLong.data = checkSum;
-
-				// Breakdown the float into bytes
-				FloatSplicer sFloat;
-				sFloat.data = temperature;
-
-				// Fillout the data to send, then cleanup
-				transmit[1] = sFloat.bytes[0];
-				transmit[2] = sFloat.bytes[1];
-				transmit[3] = sFloat.bytes[2];
-				transmit[4] = sFloat.bytes[3];
-
-				transmit[5] = sLong.bytes[0];
-				transmit[6] = sLong.bytes[1];
-				transmit[7] = sLong.bytes[2];
-				transmit[8] = sLong.bytes[3];
+				// Build the data to send
+				spliceData(temperature, x, y, z, g_x, g_y, g_z, checkSum, transmit);
 
 				// Transmit the data over
 				radio.send(transmit, sizeof(transmit));
@@ -179,15 +191,9 @@ void loop() {
 * Used to get the temperature reading off of the
 * sensor
 */
-float getTemperature() {
+uint16_t getTemperatureRead() {
 
-	float voltage = analogRead(TEMP) * 5.0;
-	voltage /= 1024.0;
-
-	float temperatureC = (voltage - 0.5) * 100;
-	float temperatureF = (temperatureC * 9.0 / 5.0) + 32.0;
-
-	return temperatureF;
+	return analogRead(TEMP);
 
 }
 
@@ -195,11 +201,65 @@ float getTemperature() {
 * Used to calculate the checksum for data checking (because
 * there is a possibility of error)
 */
-long calcChecksum(float &temperature) {
+byte calcChecksum(uint16_t &temperature, uint16_t &x, uint16_t &y, uint16_t &z, float &g_x, float &g_y, float &g_z) {
 
 	// Removing the decimal on the float.. Since the checksum is a long
-	int intTemperature = static_cast<int>(temperature);
+	long sum = temperature + x + y + z + static_cast<int>(g_x) + static_cast<int>(g_y) + static_cast<int>(g_z);
 
-	return intTemperature;
+	LongSplicer sumSplicer;
+	sumSplicer.data = sum;
+
+	return sumSplicer.bytes[3];
+
+}
+
+/*
+* Breaks all the data given into the provided byte array, to be sent
+* over packet radio
+*/
+void spliceData(uint16_t &temp, uint16_t &x, uint16_t &y, uint16_t &z, float &g_x, float &g_y, float &g_z, byte &checksum, uint8_t data[]) {
+
+	// Breakdown the temperature reading into bytes
+	UInt16Splicer tempSplicer;
+	tempSplicer.data = temp;
+
+	// Breakdown all the axis' into bytes
+	UInt16Splicer xS, yS, zS;
+	xS.data = x; yS.data = y; zS.data = z;
+
+	// Breakdown all the g's into bytes
+	FloatSplicer xgS, ygS, zgS;
+	xgS.data = g_x; ygS.data = g_y; zgS.data = g_z;
+
+	// Fillout the data to send, then cleanup
+
+	// Temp bytes
+	data[1] = tempSplicer.bytes[0];
+	data[2] = tempSplicer.bytes[1];
+
+	// X, Y, Z orientation bytes
+	data[3] = xS.bytes[0];
+	data[4] = xS.bytes[1];
+	data[5] = yS.bytes[0];
+	data[6] = yS.bytes[1];
+	data[7] = zS.bytes[0];
+	data[8] = zS.bytes[1];
+
+	// X, Y, Z acceleration bytes
+	data[9] = xgS.bytes[0];
+	data[10] = xgS.bytes[1];
+	data[11] = xgS.bytes[2];
+	data[12] = xgS.bytes[3];
+	data[13] = ygS.bytes[0];
+	data[14] = ygS.bytes[1];
+	data[15] = ygS.bytes[2];
+	data[16] = ygS.bytes[3];
+	data[17] = zgS.bytes[0];
+	data[18] = zgS.bytes[1];
+	data[19] = zgS.bytes[2];
+	data[20] = zgS.bytes[3];
+
+	// Add the checksum
+	data[21] = checksum;
 
 }
