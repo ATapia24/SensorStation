@@ -7,3 +7,4 @@ requests and receives data from this station. With the data it receives, it will
 
 * **ATapia24** - *QT/SFML Work*
 * **activates** - *Arduino/MySQL Work*
+* **David0337528** - *3D Modeling*

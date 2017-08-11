@@ -1,5 +1,6 @@
 #include <SPI.h>
 #include <RH_RF69.h>
+#include <Ethernet.h>
 
 // Frequency in MGhz
 #define FREQ 433.0
@@ -12,19 +13,29 @@
 // Radio object
 RH_RF69 radio(CS, G0);
 
+// Ethernet object
+EthernetClient client;
+
 // etc. Configurations
 #define RESEND 5      // The amount of times to resend the data
 #define RETRY 5       // The amount of times to retry getting a reply before giving up
 #define DELAY 5000    // The amount of milliseconds to delay at the end of the loop
-#define TIMEOUT 500  // The amount of time in milliseconds to wait for a reply before timing out
+#define TIMEOUT 500   // The amount of time in milliseconds to wait for a reply before timing out
 
 // Status register shift amounts
 #define SEND_DATA 0       // Request that the sensor data be sent
 #define TRANS_ERROR 1     // There was an error in the data being received
-#define REPLY_ERROR 2        // The data was not received!
+#define REPLY_ERROR 2     // The data was not received!
 
-// Function prototypes
-bool validChecksum(uint8_t[], int16_t&, int16_t&, int16_t&, uint16_t&, float&, float&, float&);
+// Ethernet configurations
+byte mac[] = { 0xDE, 0xAD, 0xBE, 0xEF, 0xFE, 0xED };    // Mac address
+char domain[] = "www.vvcrobotics.club";                 // Domain to connect to
+IPAddress address(192, 168, 1, 187);                    // set an IP to use just in case DHCP doens't work
+
+														// Function prototypes
+bool validChecksum(uint8_t[], int16_t&, int16_t&, int16_t&, int16_t&, float&, float&, float&);
+void parseData(uint8_t[], int16_t&, int16_t&, int16_t&, int16_t&, float&, float&, float&);
+void postData(float&, int16_t&, int16_t&, int16_t&, float&, float&, float&);
 
 void setup() {
 
@@ -69,6 +80,21 @@ void setup() {
 
 	Serial.println("The radio has been setup, and is ready to go");
 
+
+	// Make sure the ethernet bridge is working
+	if (Ethernet.begin(mac) == 0) {
+		// Failed to obtain IP automatically, so set static IP
+		Serial.println("Unable to configure the ethernet bridge using DHCP, using static IP");
+		Ethernet.begin(mac, address);
+
+	}
+	else {
+		Serial.println("Ethernet shield is ready to go");
+	}
+
+	// Give the ethernet shield time to setup
+	delay(1000);
+
 }
 
 // Unions for breaking apart data into bytes
@@ -80,11 +106,6 @@ union LongSplicer {
 union FloatSplicer {
 	float data;
 	byte bytes[4];
-};
-
-union UInt16Splicer {
-	uint16_t data;
-	byte bytes[2];
 };
 
 union Int16Splicer {
@@ -144,52 +165,28 @@ void loop() {
 			// Make sure the state is updated to normal
 			state = NORMAL;
 
-			// TODO: Handle reply here
 			/*
 			* We have decided to use a checksum to make sure the data was not corrupted,
 			* so that will have to be up to the station to generate the checksum, and the
 			* server to check it.
 			*/
 
-			// Convert all the received data into usable numbers
-			// Temperature
-			UInt16Splicer temperature;
-			temperature.bytes[0] = receive[1];
-			temperature.bytes[1] = receive[2];
+			// Create all the necessary variables to hold the data
+			int16_t temperature, x, y, z;
+			float g_x, g_y, g_z;
 
-			// X, Y, Z Orientation  
-			Int16Splicer x, y, z;
-			x.bytes[0] = receive[3];
-			x.bytes[1] = receive[4];
-			y.bytes[0] = receive[5];
-			y.bytes[1] = receive[6];
-			z.bytes[0] = receive[7];
-			z.bytes[1] = receive[8];
-
-			// X, Y, Z Acceleration
-			FloatSplicer g_x, g_y, g_z;
-			g_x.bytes[0] = receive[9];
-			g_x.bytes[1] = receive[10];
-			g_x.bytes[2] = receive[11];
-			g_x.bytes[3] = receive[12];
-			g_y.bytes[0] = receive[13];
-			g_y.bytes[1] = receive[14];
-			g_y.bytes[2] = receive[15];
-			g_y.bytes[3] = receive[16];
-			g_z.bytes[0] = receive[17];
-			g_z.bytes[1] = receive[18];
-			g_z.bytes[2] = receive[19];
-			g_z.bytes[3] = receive[20];
+			// Parse all the received data
+			parseData(receive, temperature, x, y, z, g_x, g_y, g_z);
 
 			// Make sure the checksum cleared
-			if (!validChecksum(receive, temperature.data, x.data, y.data, z.data, g_x.data, g_y.data, g_z.data)) {
+			if (!validChecksum(receive, temperature, x, y, z, g_x, g_y, g_z)) {
 				Serial.println("Checksum did not validate! Retrying later");
 				state = ERROR;
 				return;
 			}
 
 			// Convert the temperature to usuable data
-			float celsius = (((temperature.data * 5) / 1024.0) - 0.5) / 0.01,
+			float celsius = (((temperature * 5) / 1024.0) - 0.5) / 0.01,
 				farenheight = (celsius * 1.8) + 32;
 
 			// If all is good, then print the data
@@ -197,14 +194,15 @@ void loop() {
 			Serial.println(farenheight, DEC);
 
 			Serial.print("X: ");
-			Serial.print(x.data);
+			Serial.print(x);
 			Serial.print(" Y: ");
-			Serial.print(y.data);
+			Serial.print(y);
 			Serial.print(" Z: ");
-			Serial.println(z.data);
+			Serial.println(z);
 
 			Serial.print("RSSI: ");
 			Serial.println(radio.lastRssi());
+			postData(farenheight, x, y, z, g_x, g_y, g_z);
 
 		}
 		else {
@@ -234,7 +232,7 @@ void loop() {
 *
 * !! We are only expecting temperature data right now !!
 */
-bool validChecksum(uint8_t data[], uint16_t &temperature, int16_t &x, int16_t &y, int16_t &z, float &g_x, float &g_y, float &g_z) {
+bool validChecksum(uint8_t data[], int16_t &temperature, int16_t &x, int16_t &y, int16_t &z, float &g_x, float &g_y, float &g_z) {
 
 	// Sum everything together for checking purposes :)
 	long sum = temperature + x + y + z + static_cast<int>(g_x) + static_cast<int>(g_y) + static_cast<int>(g_z);
@@ -244,5 +242,96 @@ bool validChecksum(uint8_t data[], uint16_t &temperature, int16_t &x, int16_t &y
 
 	// Now compare the two
 	return (checksum.bytes[0] == data[21]);
+
+}
+
+/*
+* For this function, all you have to do is pass the received data byte-array and the variables
+* you want to fill up with the data.
+*/
+void parseData(uint8_t data[], int16_t &temperature, int16_t &x, int16_t &y, int16_t &z, float &g_x, float &g_y, float &g_z) {
+
+	// Convert all the received data into usable numbers
+	// Temperature
+	Int16Splicer temp;
+	temp.bytes[0] = data[1];
+	temp.bytes[1] = data[2];
+
+	// X, Y, Z Orientation  
+	Int16Splicer xS, yS, zS;
+	xS.bytes[0] = data[3];
+	xS.bytes[1] = data[4];
+	yS.bytes[0] = data[5];
+	yS.bytes[1] = data[6];
+	zS.bytes[0] = data[7];
+	zS.bytes[1] = data[8];
+
+	// X, Y, Z Acceleration
+	FloatSplicer g_xS, g_yS, g_zS;
+	g_xS.bytes[0] = data[9];
+	g_xS.bytes[1] = data[10];
+	g_xS.bytes[2] = data[11];
+	g_xS.bytes[3] = data[12];
+	g_yS.bytes[0] = data[13];
+	g_yS.bytes[1] = data[14];
+	g_yS.bytes[2] = data[15];
+	g_yS.bytes[3] = data[16];
+	g_zS.bytes[0] = data[17];
+	g_zS.bytes[1] = data[18];
+	g_zS.bytes[2] = data[19];
+	g_zS.bytes[3] = data[20];
+
+	// Pass the data over
+	temperature = temp.data;
+
+	x = xS.data;
+	y = yS.data;
+	z = zS.data;
+
+	g_x = g_xS.data;
+	g_y = g_yS.data;
+	g_z = g_zS.data;
+
+}
+
+/*
+* This function's job is to take the data, and post it to the internet!
+*/
+void postData(float &temperature, int16_t &x, int16_t &y, int16_t &z, float &g_x, float &g_y, float &g_z) {
+
+	String data = "GET /data.php?t=";
+	data.concat(temperature);
+	data.concat("&x=");
+	data.concat(x);
+	data.concat("&y=");
+	data.concat(y);
+	data.concat("&z=");
+	data.concat(z);
+	data.concat("&gx=");
+	data.concat(g_x);
+	data.concat("&gy=");
+	data.concat(g_y);
+	data.concat("&gz=");
+	data.concat(g_z);
+	data.concat(" HTTP/1.1");
+
+	// Attempt to connect to the server
+	if (client.connect(domain, 80)) {
+
+		// Make the HTTP request
+		client.println(data.c_str());
+		client.println("Host: www.vvcrobotics.club");
+		client.println("Connection: close");
+		client.println();
+
+		Serial.println("Web transaction complete");
+
+		// Stop the client
+		client.stop();
+
+	}
+	else {
+		Serial.println("Unable to connect to the webserver");
+	}
 
 }
