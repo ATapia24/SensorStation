@@ -35,7 +35,7 @@ IPAddress address(192, 168, 1, 187);                    // set an IP to use just
 														// Function prototypes
 bool validChecksum(uint8_t[], int16_t&, int16_t&, int16_t&, int16_t&, float&, float&, float&);
 void parseData(uint8_t[], int16_t&, int16_t&, int16_t&, int16_t&, float&, float&, float&);
-void postData(float&, int16_t&, int16_t&, int16_t&, float&, float&, float&);
+void postData(float&, int16_t&, int16_t&, int16_t&, float&, float&, float&, int16_t&);
 
 void setup() {
 
@@ -189,6 +189,8 @@ void loop() {
 			float celsius = (((temperature * 5) / 1024.0) - 0.5) / 0.01,
 				farenheight = (celsius * 1.8) + 32;
 
+			int16_t rssi = radio.lastRssi();
+
 			// If all is good, then print the data
 			Serial.print("Temperature: ");
 			Serial.println(farenheight, DEC);
@@ -201,8 +203,8 @@ void loop() {
 			Serial.println(z);
 
 			Serial.print("RSSI: ");
-			Serial.println(radio.lastRssi());
-			postData(farenheight, x, y, z, g_x, g_y, g_z);
+			Serial.println(rssi);
+			postData(farenheight, x, y, z, g_x, g_y, g_z, rssi);
 
 		}
 		else {
@@ -297,9 +299,9 @@ void parseData(uint8_t data[], int16_t &temperature, int16_t &x, int16_t &y, int
 /*
 * This function's job is to take the data, and post it to the internet!
 */
-void postData(float &temperature, int16_t &x, int16_t &y, int16_t &z, float &g_x, float &g_y, float &g_z) {
+void postData(float &temperature, int16_t &x, int16_t &y, int16_t &z, float &g_x, float &g_y, float &g_z, int16_t &rssi) {
 
-	String data = "GET /data.php?t=";
+	String data = "GET /weather_post.php?t=";
 	data.concat(temperature);
 	data.concat("&x=");
 	data.concat(x);
@@ -313,7 +315,9 @@ void postData(float &temperature, int16_t &x, int16_t &y, int16_t &z, float &g_x
 	data.concat(g_y);
 	data.concat("&gz=");
 	data.concat(g_z);
-	data.concat(" HTTP/1.1");
+	data.concat("&rssi=");
+	data.concat(rssi);
+	// data.concat(" HTTP/1.1");
 
 	// Attempt to connect to the server
 	if (client.connect(domain, 80)) {
@@ -323,6 +327,15 @@ void postData(float &temperature, int16_t &x, int16_t &y, int16_t &z, float &g_x
 		client.println("Host: www.vvcrobotics.club");
 		client.println("Connection: close");
 		client.println();
+
+		delay(100);
+
+		// read any bytes incoming and just dump them to the screen
+		char b;
+		while (client.available()) {
+			b = client.read();
+			Serial.print(b);
+		}
 
 		Serial.println("Web transaction complete");
 
