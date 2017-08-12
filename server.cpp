@@ -29,10 +29,11 @@ EthernetClient client;
 
 // Ethernet configurations
 byte mac[] = { 0xDE, 0xAD, 0xBE, 0xEF, 0xFE, 0xED };    // Mac address
-char domain[] = "www.vvcrobotics.club";                 // Domain to connect to
+char domain[] = "";										// Domain to connect to
 IPAddress address(192, 168, 1, 187);                    // set an IP to use just in case DHCP doens't work
+String key = "";										// Authentication Key
 
-														// Function prototypes
+// Function prototypes
 bool validChecksum(uint8_t[], int16_t&, int16_t&, int16_t&, int16_t&, float&, float&, float&);
 void parseData(uint8_t[], int16_t&, int16_t&, int16_t&, int16_t&, float&, float&, float&);
 void postData(float&, int16_t&, int16_t&, int16_t&, float&, float&, float&, int16_t&);
@@ -317,7 +318,9 @@ void postData(float &temperature, int16_t &x, int16_t &y, int16_t &z, float &g_x
 	data.concat(g_z);
 	data.concat("&rssi=");
 	data.concat(rssi);
-	// data.concat(" HTTP/1.1");
+	data.concat("&key=");
+	data.concat(key);
+	data.concat(" HTTP/1.1");
 
 	// Attempt to connect to the server
 	if (client.connect(domain, 80)) {
