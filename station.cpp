@@ -1,7 +1,11 @@
 #include <SPI.h>
 #include <RH_RF69.h>
 #include <Adafruit_MMA8451.h>
+#include <Adafruit_BMP280.h>
+#include <Adafruit_HMC5883_U.h>
 #include <Adafruit_Sensor.h>
+#include "Adafruit_TCS34725.h"
+#include "Adafruit_Si7021.h"
 
 // Frequency in MGhz
 #define FREQ 433.0
@@ -13,12 +17,26 @@
 
 // Sensor pins
 #define TEMP 14
+#define UV_PIN 15
+#define GAS_PIN 16
 
 // Radio object
 RH_RF69 radio(CS, G0);
 
+// Magnetometer object
+Adafruit_HMC5883_Unified mag = Adafruit_HMC5883_Unified(1);
+
 // Accelerometer object
 Adafruit_MMA8451 acc = Adafruit_MMA8451();
+
+// Pressure sensor object
+Adafruit_BMP280 bmp;
+
+// RGB sensor object
+Adafruit_TCS34725 tcs(TCS34725_INTEGRATIONTIME_700MS, TCS34725_GAIN_1X);
+
+// Humidity sensor object
+Adafruit_Si7021 hum;
 
 // etc. Configurations
 #define TIMEOUT 500  // The amount of time in milliseconds to wait for a reply before timing out
@@ -31,8 +49,10 @@ int TRANS_POWER = 14; // The amount trans power should start out with (changes i
 
 					  // Function prototypes
 uint16_t getTemperatureRead();
-byte calcChecksum(int16_t&, int16_t&, int16_t&, int16_t&, float&, float&, float&);
-void spliceData(int16_t&, int16_t&, int16_t&, int16_t&, float&, float&, float&, long&, uint8_t[]);
+byte calcChecksum(int16_t&, int16_t&, int16_t&, int16_t&, float&, float&, float&, float&, float&, float&, float&, uint16_t&, uint16_t&,
+	uint16_t&, uint16_t&, uint16_t&, float&, float&, float&, float&, float&, int16_t&, int16_t&);
+void spliceData(int16_t&, int16_t&, int16_t&, int16_t&, float&, float&, float&, float&, float&, float&, float&, uint16_t&, uint16_t&, uint16_t&, uint16_t&, uint16_t&, float&, float&, float&,
+	float&, float&, int16_t&, int16_t&, byte&, uint8_t[]);
 
 void setup() {
 
@@ -88,6 +108,30 @@ void setup() {
 	// Set the range of the accelerometer
 	acc.setRange(MMA8451_RANGE_2_G);
 
+	// Check to see if the BMP280 sensor is ready to go
+	if (!bmp.begin()) {
+		Serial.println("Unable to find BMP280 sensor");
+		for (;;) {}
+	}
+
+	// Make sure the TCS34725 sensor is working
+	if (!tcs.begin()) {
+		Serial.println("Unable to find TCS34725 sensor");
+		for (;;) {}
+	}
+
+	// Make sure the Si7021 sensor is working
+	if (!hum.begin()) {
+		Serial.println("Unable to the find the Si7021 sensor");
+		for (;;) {}
+	}
+
+	// Make sure the HMC5883L is working
+	if (!mag.begin()) {
+		Serial.println("Unbale to find the HMC5883L sensor");
+		for (;;) {}
+	}
+
 }
 
 // Unions for breaking apart data into bytes
@@ -103,6 +147,11 @@ union FloatSplicer {
 
 union Int16Splicer {
 	int16_t data;
+	byte bytes[2];
+};
+
+union UInt16Splicer {
+	uint16_t data;
 	byte bytes[2];
 };
 
@@ -160,15 +209,51 @@ void loop() {
 
 				float g_x = accEvent.acceleration.x, g_y = accEvent.acceleration.y, g_z = accEvent.acceleration.z;
 
+				// Get the compass data
+				float cx, cy, cz, ch;
+
+				sensors_event_t compassEvent;
+				mag.getEvent(&compassEvent);
+
+				cx = compassEvent.magnetic.x; cy = compassEvent.magnetic.y; cz = compassEvent.magnetic.z;
+				ch = atan2(cy, cx);
+
+				// Get the RGB data
+				uint16_t rgb_g, rgb_b, rgb_r, rgb_lux, rgb_intensity, rgb_c;
+
+				tcs.getRawData(&rgb_r, &rgb_g, &rgb_b, &rgb_c);
+				rgb_lux = tcs.calculateLux(rgb_r, rgb_g, rgb_b);
+				rgb_intensity = tcs.calculateColorTemperature(rgb_r, rgb_g, rgb_b);
+
+				// Get the humidity data
+				float humidity, humidity_temp;
+
+				humidity = hum.readHumidity();
+				humidity_temp = hum.readTemperature();
+
+				// Get the pressure data
+				float pressure, pressure_altitude, pressure_temp;
+
+				pressure = bmp.readPressure();
+				pressure_altitude = bmp.readAltitude(1013.25);
+				pressure_temp = bmp.readTemperature();
+
+				// Get the etc analog data
+				int16_t uv, gas;
+
+				uv = analogRead(UV_PIN); gas = analogRead(GAS_PIN);
+
 				// Build the data to send over
-				uint8_t transmit[22];
+				uint8_t transmit[72];
 
 				// No need to send any commands over the sreg, so just send the data
 				// Create the checksum
-				byte checkSum = calcChecksum(temperature, x, y, z, g_x, g_y, g_z);
+				byte checkSum = calcChecksum(temperature, x, y, z, g_x, g_y, g_z, cx, cy, cz, ch, rgb_r, rgb_b, rgb_g, rgb_lux, rgb_intensity, humidity, humidity_temp, pressure, pressure_altitude,
+					pressure_temp, uv, gas);
 
 				// Build the data to send
-				spliceData(temperature, x, y, z, g_x, g_y, g_z, checkSum, transmit);
+				spliceData(temperature, x, y, z, g_x, g_y, g_z, cx, cy, cz, ch, rgb_r, rgb_g, rgb_b, rgb_lux, rgb_intensity, humidity, humidity_temp, pressure, pressure_altitude, pressure_temp,
+					uv, gas, checkSum, transmit);
 
 				// Transmit the data over
 				radio.send(transmit, sizeof(transmit));
@@ -201,10 +286,13 @@ uint16_t getTemperatureRead() {
 * Used to calculate the checksum for data checking (because
 * there is a possibility of error)
 */
-byte calcChecksum(int16_t &temperature, int16_t &x, int16_t &y, int16_t &z, float &g_x, float &g_y, float &g_z) {
+byte calcChecksum(int16_t &temperature, int16_t &x, int16_t &y, int16_t &z, float &g_x, float &g_y, float &g_z, float &cx, float &cy, float &cz, float &ch, uint16_t &rgb_r, uint16_t &rgb_b,
+	uint16_t &rgb_g, uint16_t &rgb_lux, uint16_t &rgb_int, float &humidity, float &humidity_temp, float &pres, float &altitude, float &press_temp, int16_t &uv, int16_t &gas) {
 
 	// Removing the decimal on the float.. Since the checksum is a long
-	long sum = temperature + x + y + z + static_cast<int>(g_x) + static_cast<int>(g_y) + static_cast<int>(g_z);
+	long sum = temperature + x + y + z + static_cast<int>(g_x) + static_cast<int>(g_y) + static_cast<int>(g_z) + static_cast<int>(cx) + static_cast<int>(cy) + static_cast<int>(cz)
+		+ static_cast<int>(ch) + rgb_r + rgb_b + rgb_g + rgb_lux + rgb_int + static_cast<int>(humidity) + static_cast<int>(humidity_temp) + static_cast<int>(pres) + static_cast<int>(altitude)
+		+ static_cast<int>(press_temp) + uv + gas;
 
 	LongSplicer sumSplicer;
 	sumSplicer.data = sum;
@@ -217,7 +305,8 @@ byte calcChecksum(int16_t &temperature, int16_t &x, int16_t &y, int16_t &z, floa
 * Breaks all the data given into the provided byte array, to be sent
 * over packet radio
 */
-void spliceData(int16_t &temp, int16_t &x, int16_t &y, int16_t &z, float &g_x, float &g_y, float &g_z, byte &checksum, uint8_t data[]) {
+void spliceData(int16_t &temp, int16_t &x, int16_t &y, int16_t &z, float &g_x, float &g_y, float &g_z, float &cx, float &cy, float &cz, float &ch, uint16_t &rgb_r, uint16_t &rgb_b,
+	uint16_t &rgb_g, uint16_t &rgb_lux, uint16_t &rgb_int, float &humidity, float &humidity_temp, float &pres, float &altitude, float &press_temp, int16_t &uv, int16_t &gas, byte &checksum, uint8_t data[]) {
 
 	// Breakdown the temperature reading into bytes
 	Int16Splicer tempSplicer;
@@ -230,6 +319,27 @@ void spliceData(int16_t &temp, int16_t &x, int16_t &y, int16_t &z, float &g_x, f
 	// Breakdown all the g's into bytes
 	FloatSplicer xgS, ygS, zgS;
 	xgS.data = g_x; ygS.data = g_y; zgS.data = g_z;
+
+	// Breakdown all the compas information into bytes
+	FloatSplicer cxS, cyS, czS, heading;
+	cxS.data = cx; cyS.data = cy; czS.data = cz; heading.data = ch;
+
+	// Breakdown all the magnometer data into bytes
+	UInt16Splicer rS, bS, gS, lux, intensity;
+	rS.data = rgb_r; bS.data = rgb_b; gS.data = rgb_g;
+	lux.data = rgb_lux; intensity.data = rgb_int;
+
+	// Breakdown all the humidity data
+	FloatSplicer humidityS, humidityTemp;
+	humidityS.data = humidity; humidityTemp.data = humidity_temp;
+
+	// Breakdown all the pressure data
+	FloatSplicer pressure, altitudeS, pressureTemp;
+	pressure.data = pres; altitudeS.data = altitude; pressureTemp.data = press_temp;
+
+	// Analog conversion data
+	Int16Splicer uvS, gasS;
+	uvS.data = uv; gasS.data = gas;
 
 	// Fillout the data to send, then cleanup
 
@@ -259,7 +369,67 @@ void spliceData(int16_t &temp, int16_t &x, int16_t &y, int16_t &z, float &g_x, f
 	data[19] = zgS.bytes[2];
 	data[20] = zgS.bytes[3];
 
-	// Add the checksum
-	data[21] = checksum;
+	// Compass data bytes
+	data[21] = cxS.bytes[0];
+	data[22] = cxS.bytes[1];
+	data[23] = cxS.bytes[2];
+	data[24] = cxS.bytes[3];
+	data[25] = cyS.bytes[0];
+	data[26] = cyS.bytes[1];
+	data[27] = cyS.bytes[2];
+	data[28] = cyS.bytes[3];
+	data[29] = czS.bytes[0];
+	data[30] = czS.bytes[1];
+	data[31] = czS.bytes[2];
+	data[32] = czS.bytes[3];
+	data[33] = heading.bytes[0];
+	data[34] = heading.bytes[1];
+	data[35] = heading.bytes[2];
+	data[36] = heading.bytes[3];
+
+	// RGB data bytes
+	data[37] = rS.bytes[0];
+	data[38] = rS.bytes[1];
+	data[39] = bS.bytes[0];
+	data[40] = bS.bytes[1];
+	data[41] = gS.bytes[0];
+	data[42] = gS.bytes[1];
+	data[43] = lux.bytes[0];
+	data[44] = lux.bytes[1];
+	data[45] = intensity.bytes[0];
+	data[46] = intensity.bytes[1];
+
+	// Humidity bytes
+	data[47] = humidityS.bytes[0];
+	data[48] = humidityS.bytes[1];
+	data[49] = humidityS.bytes[2];
+	data[50] = humidityS.bytes[3];
+	data[51] = humidityTemp.bytes[0];
+	data[52] = humidityTemp.bytes[1];
+	data[53] = humidityTemp.bytes[2];
+	data[54] = humidityTemp.bytes[3];
+
+	// Pressure bytes
+	data[55] = pressure.bytes[0];
+	data[56] = pressure.bytes[1];
+	data[57] = pressure.bytes[2];
+	data[58] = pressure.bytes[3];
+	data[59] = altitudeS.bytes[0];
+	data[60] = altitudeS.bytes[1];
+	data[61] = altitudeS.bytes[2];
+	data[62] = altitudeS.bytes[3];
+	data[63] = pressureTemp.bytes[0];
+	data[64] = pressureTemp.bytes[1];
+	data[65] = pressureTemp.bytes[2];
+	data[66] = pressureTemp.bytes[3];
+
+	// Gas and UV bytes
+	data[67] = uvS.bytes[0];
+	data[68] = uvS.bytes[1];
+	data[69] = gasS.bytes[0];
+	data[70] = gasS.bytes[1];
+
+	// Add the checksum101
+	data[71] = checksum;
 
 }
