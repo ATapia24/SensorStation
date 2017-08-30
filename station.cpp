@@ -49,9 +49,9 @@ int TRANS_POWER = 14; // The amount trans power should start out with (changes i
 
 					  // Function prototypes
 uint16_t getTemperatureRead();
-byte calcChecksum(int16_t&, int16_t&, int16_t&, int16_t&, float&, float&, float&, float&, float&, float&, float&, uint16_t&, uint16_t&,
+byte calcChecksum(int16_t&, int16_t&, int16_t&, int16_t&, float&, float&, float&, float&, uint16_t&, uint16_t&,
 	uint16_t&, uint16_t&, uint16_t&, float&, float&, float&, float&, float&, int16_t&, int16_t&);
-void spliceData(int16_t&, int16_t&, int16_t&, int16_t&, float&, float&, float&, float&, float&, float&, float&, uint16_t&, uint16_t&, uint16_t&, uint16_t&, uint16_t&, float&, float&, float&,
+void spliceData(int16_t&, int16_t&, int16_t&, int16_t&, float&, float&, float&, float&, uint16_t&, uint16_t&, uint16_t&, uint16_t&, uint16_t&, float&, float&, float&,
 	float&, float&, int16_t&, int16_t&, byte&, uint8_t[]);
 
 void setup() {
@@ -204,11 +204,6 @@ void loop() {
 				acc.read();
 				int16_t x = acc.x, y = acc.y, z = acc.z;
 
-				sensors_event_t accEvent;
-				acc.getEvent(&accEvent);
-
-				float g_x = accEvent.acceleration.x, g_y = accEvent.acceleration.y, g_z = accEvent.acceleration.z;
-
 				// Get the compass data
 				float cx, cy, cz, ch;
 
@@ -244,15 +239,15 @@ void loop() {
 				uv = analogRead(UV_PIN); gas = analogRead(GAS_PIN);
 
 				// Build the data to send over
-				uint8_t transmit[72];
+				uint8_t transmit[60];
 
 				// No need to send any commands over the sreg, so just send the data
 				// Create the checksum
-				byte checkSum = calcChecksum(temperature, x, y, z, g_x, g_y, g_z, cx, cy, cz, ch, rgb_r, rgb_b, rgb_g, rgb_lux, rgb_intensity, humidity, humidity_temp, pressure, pressure_altitude,
+				byte checkSum = calcChecksum(temperature, x, y, z, cx, cy, cz, ch, rgb_r, rgb_b, rgb_g, rgb_lux, rgb_intensity, humidity, humidity_temp, pressure, pressure_altitude,
 					pressure_temp, uv, gas);
 
 				// Build the data to send
-				spliceData(temperature, x, y, z, g_x, g_y, g_z, cx, cy, cz, ch, rgb_r, rgb_g, rgb_b, rgb_lux, rgb_intensity, humidity, humidity_temp, pressure, pressure_altitude, pressure_temp,
+				spliceData(temperature, x, y, z, cx, cy, cz, ch, rgb_r, rgb_b, rgb_g, rgb_lux, rgb_intensity, humidity, humidity_temp, pressure, pressure_altitude, pressure_temp,
 					uv, gas, checkSum, transmit);
 
 				// Transmit the data over
@@ -286,11 +281,11 @@ uint16_t getTemperatureRead() {
 * Used to calculate the checksum for data checking (because
 * there is a possibility of error)
 */
-byte calcChecksum(int16_t &temperature, int16_t &x, int16_t &y, int16_t &z, float &g_x, float &g_y, float &g_z, float &cx, float &cy, float &cz, float &ch, uint16_t &rgb_r, uint16_t &rgb_b,
+byte calcChecksum(int16_t &temperature, int16_t &x, int16_t &y, int16_t &z, float &cx, float &cy, float &cz, float &ch, uint16_t &rgb_r, uint16_t &rgb_b,
 	uint16_t &rgb_g, uint16_t &rgb_lux, uint16_t &rgb_int, float &humidity, float &humidity_temp, float &pres, float &altitude, float &press_temp, int16_t &uv, int16_t &gas) {
 
 	// Removing the decimal on the float.. Since the checksum is a long
-	long sum = temperature + x + y + z + static_cast<int>(g_x) + static_cast<int>(g_y) + static_cast<int>(g_z) + static_cast<int>(cx) + static_cast<int>(cy) + static_cast<int>(cz)
+	long sum = temperature + x + y + z + static_cast<int>(cx) + static_cast<int>(cy) + static_cast<int>(cz)
 		+ static_cast<int>(ch) + rgb_r + rgb_b + rgb_g + rgb_lux + rgb_int + static_cast<int>(humidity) + static_cast<int>(humidity_temp) + static_cast<int>(pres) + static_cast<int>(altitude)
 		+ static_cast<int>(press_temp) + uv + gas;
 
@@ -305,7 +300,7 @@ byte calcChecksum(int16_t &temperature, int16_t &x, int16_t &y, int16_t &z, floa
 * Breaks all the data given into the provided byte array, to be sent
 * over packet radio
 */
-void spliceData(int16_t &temp, int16_t &x, int16_t &y, int16_t &z, float &g_x, float &g_y, float &g_z, float &cx, float &cy, float &cz, float &ch, uint16_t &rgb_r, uint16_t &rgb_b,
+void spliceData(int16_t &temp, int16_t &x, int16_t &y, int16_t &z, float &cx, float &cy, float &cz, float &ch, uint16_t &rgb_r, uint16_t &rgb_b,
 	uint16_t &rgb_g, uint16_t &rgb_lux, uint16_t &rgb_int, float &humidity, float &humidity_temp, float &pres, float &altitude, float &press_temp, int16_t &uv, int16_t &gas, byte &checksum, uint8_t data[]) {
 
 	// Breakdown the temperature reading into bytes
@@ -315,10 +310,6 @@ void spliceData(int16_t &temp, int16_t &x, int16_t &y, int16_t &z, float &g_x, f
 	// Breakdown all the axis' into bytes
 	Int16Splicer xS, yS, zS;
 	xS.data = x; yS.data = y; zS.data = z;
-
-	// Breakdown all the g's into bytes
-	FloatSplicer xgS, ygS, zgS;
-	xgS.data = g_x; ygS.data = g_y; zgS.data = g_z;
 
 	// Breakdown all the compas information into bytes
 	FloatSplicer cxS, cyS, czS, heading;
@@ -355,81 +346,67 @@ void spliceData(int16_t &temp, int16_t &x, int16_t &y, int16_t &z, float &g_x, f
 	data[7] = zS.bytes[0];
 	data[8] = zS.bytes[1];
 
-	// X, Y, Z acceleration bytes
-	data[9] = xgS.bytes[0];
-	data[10] = xgS.bytes[1];
-	data[11] = xgS.bytes[2];
-	data[12] = xgS.bytes[3];
-	data[13] = ygS.bytes[0];
-	data[14] = ygS.bytes[1];
-	data[15] = ygS.bytes[2];
-	data[16] = ygS.bytes[3];
-	data[17] = zgS.bytes[0];
-	data[18] = zgS.bytes[1];
-	data[19] = zgS.bytes[2];
-	data[20] = zgS.bytes[3];
-
 	// Compass data bytes
-	data[21] = cxS.bytes[0];
-	data[22] = cxS.bytes[1];
-	data[23] = cxS.bytes[2];
-	data[24] = cxS.bytes[3];
-	data[25] = cyS.bytes[0];
-	data[26] = cyS.bytes[1];
-	data[27] = cyS.bytes[2];
-	data[28] = cyS.bytes[3];
-	data[29] = czS.bytes[0];
-	data[30] = czS.bytes[1];
-	data[31] = czS.bytes[2];
-	data[32] = czS.bytes[3];
-	data[33] = heading.bytes[0];
-	data[34] = heading.bytes[1];
-	data[35] = heading.bytes[2];
-	data[36] = heading.bytes[3];
+	data[9] = cxS.bytes[0];
+	data[10] = cxS.bytes[1];
+	data[11] = cxS.bytes[2];
+	data[12] = cxS.bytes[3];
+	data[13] = cyS.bytes[0];
+	data[14] = cyS.bytes[1];
+	data[15] = cyS.bytes[2];
+	data[16] = cyS.bytes[3];
+	data[17] = czS.bytes[0];
+	data[18] = czS.bytes[1];
+	data[19] = czS.bytes[2];
+	data[20] = czS.bytes[3];
+	data[21] = heading.bytes[0];
+	data[22] = heading.bytes[1];
+	data[23] = heading.bytes[2];
+	data[24] = heading.bytes[3];
 
 	// RGB data bytes
-	data[37] = rS.bytes[0];
-	data[38] = rS.bytes[1];
-	data[39] = bS.bytes[0];
-	data[40] = bS.bytes[1];
-	data[41] = gS.bytes[0];
-	data[42] = gS.bytes[1];
-	data[43] = lux.bytes[0];
-	data[44] = lux.bytes[1];
-	data[45] = intensity.bytes[0];
-	data[46] = intensity.bytes[1];
+	data[25] = rS.bytes[0];
+	data[26] = rS.bytes[1];
+	data[27] = bS.bytes[0];
+	data[28] = bS.bytes[1];
+	data[29] = gS.bytes[0];
+	data[30] = gS.bytes[1];
+	data[31] = lux.bytes[0];
+	data[32] = lux.bytes[1];
+	data[33] = intensity.bytes[0];
+	data[34] = intensity.bytes[1];
 
 	// Humidity bytes
-	data[47] = humidityS.bytes[0];
-	data[48] = humidityS.bytes[1];
-	data[49] = humidityS.bytes[2];
-	data[50] = humidityS.bytes[3];
-	data[51] = humidityTemp.bytes[0];
-	data[52] = humidityTemp.bytes[1];
-	data[53] = humidityTemp.bytes[2];
-	data[54] = humidityTemp.bytes[3];
+	data[35] = humidityS.bytes[0];
+	data[36] = humidityS.bytes[1];
+	data[37] = humidityS.bytes[2];
+	data[38] = humidityS.bytes[3];
+	data[39] = humidityTemp.bytes[0];
+	data[40] = humidityTemp.bytes[1];
+	data[41] = humidityTemp.bytes[2];
+	data[42] = humidityTemp.bytes[3];
 
 	// Pressure bytes
-	data[55] = pressure.bytes[0];
-	data[56] = pressure.bytes[1];
-	data[57] = pressure.bytes[2];
-	data[58] = pressure.bytes[3];
-	data[59] = altitudeS.bytes[0];
-	data[60] = altitudeS.bytes[1];
-	data[61] = altitudeS.bytes[2];
-	data[62] = altitudeS.bytes[3];
-	data[63] = pressureTemp.bytes[0];
-	data[64] = pressureTemp.bytes[1];
-	data[65] = pressureTemp.bytes[2];
-	data[66] = pressureTemp.bytes[3];
+	data[43] = pressure.bytes[0];
+	data[44] = pressure.bytes[1];
+	data[45] = pressure.bytes[2];
+	data[46] = pressure.bytes[3];
+	data[47] = altitudeS.bytes[0];
+	data[48] = altitudeS.bytes[1];
+	data[49] = altitudeS.bytes[2];
+	data[50] = altitudeS.bytes[3];
+	data[51] = pressureTemp.bytes[0];
+	data[52] = pressureTemp.bytes[1];
+	data[53] = pressureTemp.bytes[2];
+	data[54] = pressureTemp.bytes[3];
 
 	// Gas and UV bytes
-	data[67] = uvS.bytes[0];
-	data[68] = uvS.bytes[1];
-	data[69] = gasS.bytes[0];
-	data[70] = gasS.bytes[1];
+	data[55] = uvS.bytes[0];
+	data[56] = uvS.bytes[1];
+	data[57] = gasS.bytes[0];
+	data[58] = gasS.bytes[1];
 
 	// Add the checksum101
-	data[71] = checksum;
+	data[59] = checksum;
 
 }

@@ -20,7 +20,7 @@ EthernetClient client;
 #define RESEND 5      // The amount of times to resend the data
 #define RETRY 5       // The amount of times to retry getting a reply before giving up
 #define DELAY 5000    // The amount of milliseconds to delay at the end of the loop
-#define TIMEOUT 500   // The amount of time in milliseconds to wait for a reply before timing out
+#define TIMEOUT 2000   // The amount of time in milliseconds to wait for a reply before timing out
 
 // Status register shift amounts
 #define SEND_DATA 0       // Request that the sensor data be sent
@@ -29,14 +29,16 @@ EthernetClient client;
 
 // Ethernet configurations
 byte mac[] = { 0xDE, 0xAD, 0xBE, 0xEF, 0xFE, 0xED };    // Mac address
-char domain[] = "";										// Domain to connect to
+char domain[] = "";                 // Domain to connect to
 IPAddress address(192, 168, 1, 187);                    // set an IP to use just in case DHCP doens't work
-String key = "";										// Authentication Key
+String key = "";
 
 // Function prototypes
-bool validChecksum(uint8_t[], int16_t&, int16_t&, int16_t&, int16_t&, float&, float&, float&);
-void parseData(uint8_t[], int16_t&, int16_t&, int16_t&, int16_t&, float&, float&, float&);
-void postData(float&, int16_t&, int16_t&, int16_t&, float&, float&, float&, int16_t&);
+bool validChecksum(uint8_t[], int16_t&, int16_t&, int16_t&, int16_t&, float&, float&, float&, float&, uint16_t&, uint16_t&,
+	uint16_t&, uint16_t&, uint16_t&, float&, float&, float&, float&, float&, int16_t&, int16_t&);
+void parseData(uint8_t[], int16_t&, int16_t&, int16_t&, int16_t&, float&, float&, float&, float&, uint16_t&, uint16_t&, uint16_t&, uint16_t&,
+	uint16_t&, float&, float&, float&, float&, float&, int16_t&, int16_t&);
+void postData(float&, int16_t&, int16_t&, int16_t&, int16_t&);
 
 void setup() {
 
@@ -81,7 +83,6 @@ void setup() {
 
 	Serial.println("The radio has been setup, and is ready to go");
 
-
 	// Make sure the ethernet bridge is working
 	if (Ethernet.begin(mac) == 0) {
 		// Failed to obtain IP automatically, so set static IP
@@ -111,6 +112,11 @@ union FloatSplicer {
 
 union Int16Splicer {
 	int16_t data;
+	byte bytes[2];
+};
+
+union UInt16Splicer {
+	uint16_t data;
 	byte bytes[2];
 };
 
@@ -173,14 +179,15 @@ void loop() {
 			*/
 
 			// Create all the necessary variables to hold the data
-			int16_t temperature, x, y, z;
-			float g_x, g_y, g_z;
+			int16_t temperature, x, y, z, uv, gas;
+			uint16_t rgb_r, rgb_b, rgb_g, rgb_lux, rgb_int;
+			float cx, cy, cz, ch, humidity, humidity_temp, altitude, press_temp, pres;
 
 			// Parse all the received data
-			parseData(receive, temperature, x, y, z, g_x, g_y, g_z);
+			parseData(receive, temperature, x, y, z, cx, cy, cz, ch, rgb_r, rgb_b, rgb_g, rgb_lux, rgb_int, humidity, humidity_temp, pres, altitude, press_temp, uv, gas);
 
 			// Make sure the checksum cleared
-			if (!validChecksum(receive, temperature, x, y, z, g_x, g_y, g_z)) {
+			if (!validChecksum(receive, temperature, x, y, z, cx, cy, cz, ch, rgb_r, rgb_b, rgb_g, rgb_lux, rgb_int, humidity, humidity_temp, pres, altitude, press_temp, uv, gas)) {
 				Serial.println("Checksum did not validate! Retrying later");
 				state = ERROR;
 				return;
@@ -205,7 +212,9 @@ void loop() {
 
 			Serial.print("RSSI: ");
 			Serial.println(rssi);
-			postData(farenheight, x, y, z, g_x, g_y, g_z, rssi);
+
+			// Post the data to the net
+			postData(farenheight, x, y, z, cx, cy, cz, ch, rgb_r, rgb_b, rgb_g, rgb_lux, rgb_int, humidity, humidity_temp, pres, altitude, press_temp, uv, gas, rssi);
 
 		}
 		else {
@@ -235,16 +244,19 @@ void loop() {
 *
 * !! We are only expecting temperature data right now !!
 */
-bool validChecksum(uint8_t data[], int16_t &temperature, int16_t &x, int16_t &y, int16_t &z, float &g_x, float &g_y, float &g_z) {
+bool validChecksum(uint8_t data[], int16_t &temperature, int16_t &x, int16_t &y, int16_t &z, float &cx, float &cy, float &cz, float &ch, uint16_t &rgb_r, uint16_t &rgb_b,
+	uint16_t &rgb_g, uint16_t &rgb_lux, uint16_t &rgb_int, float &humidity, float &humidity_temp, float &pres, float &altitude, float &press_temp, int16_t &uv, int16_t &gas) {
 
 	// Sum everything together for checking purposes :)
-	long sum = temperature + x + y + z + static_cast<int>(g_x) + static_cast<int>(g_y) + static_cast<int>(g_z);
+	long sum = temperature + x + y + z + static_cast<int>(cx) + static_cast<int>(cy) + static_cast<int>(cz)
+		+ static_cast<int>(ch) + rgb_r + rgb_b + rgb_g + rgb_lux + rgb_int + static_cast<int>(humidity) + static_cast<int>(humidity_temp) + static_cast<int>(pres) + static_cast<int>(altitude)
+		+ static_cast<int>(press_temp) + uv + gas;
 
 	LongSplicer checksum;
 	checksum.data = sum;
 
 	// Now compare the two
-	return (checksum.bytes[0] == data[21]);
+	return (checksum.bytes[0] == data[59]);
 
 }
 
@@ -252,7 +264,8 @@ bool validChecksum(uint8_t data[], int16_t &temperature, int16_t &x, int16_t &y,
 * For this function, all you have to do is pass the received data byte-array and the variables
 * you want to fill up with the data.
 */
-void parseData(uint8_t data[], int16_t &temperature, int16_t &x, int16_t &y, int16_t &z, float &g_x, float &g_y, float &g_z) {
+void parseData(uint8_t data[], int16_t &temperature, int16_t &x, int16_t &y, int16_t &z, float &cx, float &cy, float &cz, float &ch, uint16_t &rgb_r, uint16_t &rgb_b,
+	uint16_t &rgb_g, uint16_t &rgb_lux, uint16_t &rgb_int, float &humidity, float &humidity_temp, float &pres, float &altitude, float &press_temp, int16_t &uv, int16_t &gas) {
 
 	// Convert all the received data into usable numbers
 	// Temperature
@@ -269,38 +282,106 @@ void parseData(uint8_t data[], int16_t &temperature, int16_t &x, int16_t &y, int
 	zS.bytes[0] = data[7];
 	zS.bytes[1] = data[8];
 
-	// X, Y, Z Acceleration
-	FloatSplicer g_xS, g_yS, g_zS;
-	g_xS.bytes[0] = data[9];
-	g_xS.bytes[1] = data[10];
-	g_xS.bytes[2] = data[11];
-	g_xS.bytes[3] = data[12];
-	g_yS.bytes[0] = data[13];
-	g_yS.bytes[1] = data[14];
-	g_yS.bytes[2] = data[15];
-	g_yS.bytes[3] = data[16];
-	g_zS.bytes[0] = data[17];
-	g_zS.bytes[1] = data[18];
-	g_zS.bytes[2] = data[19];
-	g_zS.bytes[3] = data[20];
+	// Compass data
+	FloatSplicer cxS, cyS, czS, heading;
+	cxS.bytes[0] = data[9];
+	cxS.bytes[1] = data[10];
+	cxS.bytes[2] = data[11];
+	cxS.bytes[3] = data[12];
+	cyS.bytes[0] = data[13];
+	cyS.bytes[1] = data[14];
+	cyS.bytes[2] = data[15];
+	cyS.bytes[3] = data[16];
+	czS.bytes[0] = data[17];
+	czS.bytes[1] = data[18];
+	czS.bytes[2] = data[19];
+	czS.bytes[3] = data[20];
+	heading.bytes[0] = data[21];
+	heading.bytes[1] = data[22];
+	heading.bytes[2] = data[23];
+	heading.bytes[3] = data[24];
+
+	// RGB data
+	UInt16Splicer rS, bS, gS, lux, intensity;
+	rS.bytes[0] = data[25];
+	rS.bytes[1] = data[26];
+	bS.bytes[0] = data[27];
+	bS.bytes[1] = data[28];
+	gS.bytes[0] = data[29];
+	gS.bytes[1] = data[30];
+	lux.bytes[0] = data[31];
+	lux.bytes[1] = data[32];
+	intensity.bytes[0] = data[33];
+	intensity.bytes[1] = data[34];
+
+	// Humidity data
+	FloatSplicer humidityS, humidityTemp;
+	humidityS.bytes[0] = data[35];
+	humidityS.bytes[1] = data[36];
+	humidityS.bytes[2] = data[37];
+	humidityS.bytes[3] = data[38];
+	humidityTemp.bytes[0] = data[39];
+	humidityTemp.bytes[1] = data[40];
+	humidityTemp.bytes[2] = data[41];
+	humidityTemp.bytes[3] = data[42];
+
+	// Pressure data
+	FloatSplicer pressure, altitudeS, pressureTemp;
+	pressure.bytes[0] = data[43];
+	pressure.bytes[1] = data[44];
+	pressure.bytes[2] = data[45];
+	pressure.bytes[3] = data[46];
+	altitudeS.bytes[0] = data[47];
+	altitudeS.bytes[1] = data[48];
+	altitudeS.bytes[2] = data[49];
+	altitudeS.bytes[3] = data[50];
+	pressureTemp.bytes[0] = data[51];
+	pressureTemp.bytes[1] = data[52];
+	pressureTemp.bytes[2] = data[53];
+	pressureTemp.bytes[3] = data[54];
+
+	// Etc analog data
+	Int16Splicer uvS, gasS;
+	uvS.bytes[0] = data[55];
+	uvS.bytes[1] = data[56];
+	gasS.bytes[0] = data[57];
+	gasS.bytes[1] = data[58];
 
 	// Pass the data over
-	temperature = temp.data;
+	temperature = temp.data; // Temperature
 
-	x = xS.data;
+	x = xS.data; // Orientation
 	y = yS.data;
 	z = zS.data;
 
-	g_x = g_xS.data;
-	g_y = g_yS.data;
-	g_z = g_zS.data;
+	cx = cxS.data; // Compass and heading
+	cy = cyS.data;
+	cz = czS.data;
+	ch = heading.data;
+
+	rgb_r = rS.data; // RGB and intensity
+	rgb_b = bS.data;
+	rgb_g = gS.data;
+	rgb_lux = lux.data;
+	rgb_int = intensity.data;
+
+	humidity = humidityS.data; // Humidity and its temp
+	humidity_temp = humidityTemp.data;
+
+	pres = pressure.data; // Pressure, altitude, and its temp
+	altitude = altitudeS.data;
+	press_temp = pressureTemp.data;
+
+	uv = uvS.data; // Gas and uv sensor data
+	gas = gasS.data;
 
 }
 
 /*
 * This function's job is to take the data, and post it to the internet!
 */
-void postData(float &temperature, int16_t &x, int16_t &y, int16_t &z, float &g_x, float &g_y, float &g_z, int16_t &rssi) {
+void postData(float &temperature, int16_t &x, int16_t &y, int16_t &z, float &cx, float &cy, float &cz, float &ch, uint16_t &rgb_r, uint16_t &rgb_b,
+	uint16_t &rgb_g, uint16_t &rgb_lux, uint16_t &rgb_int, float &humidity, float &humidity_temp, float &pres, float &altitude, float &press_temp, int16_t &uv, int16_t &gas, int16_t &rssi) {
 
 	String data = "GET /weather_post.php?t=";
 	data.concat(temperature);
@@ -310,17 +391,40 @@ void postData(float &temperature, int16_t &x, int16_t &y, int16_t &z, float &g_x
 	data.concat(y);
 	data.concat("&z=");
 	data.concat(z);
-	data.concat("&gx=");
-	data.concat(g_x);
-	data.concat("&gy=");
-	data.concat(g_y);
-	data.concat("&gz=");
-	data.concat(g_z);
 	data.concat("&rssi=");
 	data.concat(rssi);
+	data.concat("&cx=");
+	data.concat(cx);
+	data.concat("&cy=");
+	data.concat(cy);
+	data.concat("&cz=");
+	data.concat(cz);
+	data.concat("&ch=");
+	data.concat(ch);
+	data.concat("&r=");
+	data.concat(rgb_r);
+	data.concat("&g=");
+	data.concat(rgb_g);
+	data.concat("&b=");
+	data.concat(rgb_b);
+	data.concat("&lux=");
+	data.concat(rgb_lux);
+	data.concat("&hum=");
+	data.concat(humidity);
+	data.concat("&pres=");
+	data.concat(pres);
+	data.concat("&alt=");
+	data.concat(altitude);
+	data.concat("&press_temp=");
+	data.concat(press_temp);
+	data.concat("&uv=");
+	data.concat(uv);
+	data.concat("&gas=");
+	data.concat(gas);
 	data.concat("&key=");
 	data.concat(key);
-	data.concat(" HTTP/1.1");
+
+	Serial.println(data);
 
 	// Attempt to connect to the server
 	if (client.connect(domain, 80)) {
